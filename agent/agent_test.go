@@ -278,3 +278,54 @@ type mockSession struct {
 }
 
 func (m *mockSession) ID() string { return m.sessionID }
+
+func TestFindAgent(t *testing.T) {
+	noOpRun := func(InvocationContext) iter.Seq2[*session.Event, error] {
+		return func(func(*session.Event, error) bool) {}
+	}
+
+	createAgent := func(name string, subAgents ...Agent) Agent {
+		t.Helper()
+		a, err := New(Config{Name: name, Run: noOpRun, SubAgents: subAgents})
+		if err != nil {
+			t.Fatalf("failed to create agent %s: %v", name, err)
+		}
+		return a
+	}
+
+	sub1 := createAgent("sub1")
+	sub2 := createAgent("sub2")
+	parent := createAgent("parent", sub1, sub2)
+
+	// Verify finding self
+	if got := parent.FindAgent("parent"); got != parent {
+		t.Errorf("FindAgent('parent') = %v, want %v", got, parent)
+	}
+
+	// Verify finding sub1
+	if got := parent.FindAgent("sub1"); got != sub1 {
+		t.Errorf("FindAgent('sub1') = %v, want %v", got, sub1)
+	}
+
+	// Verify finding sub2
+	if got := parent.FindAgent("sub2"); got != sub2 {
+		t.Errorf("FindAgent('sub2') = %v, want %v", got, sub2)
+	}
+
+	// Verify not finding unknown
+	if got := parent.FindAgent("unknown"); got != nil {
+		t.Errorf("FindAgent('unknown') = %v, want nil", got)
+	}
+
+	// Verify nested checks (recursive behavior)
+	leaf := createAgent("leaf")
+	middle := createAgent("middle", leaf)
+	top := createAgent("top", middle)
+
+	if got := top.FindAgent("leaf"); got != leaf {
+		t.Errorf("FindAgent('leaf') at top should find nested agent, got %v, want %v", got, leaf)
+	}
+	if got := top.FindAgent("middle"); got != middle {
+		t.Errorf("FindAgent('middle') at top should find middle agent, got %v, want %v", got, middle)
+	}
+}
