@@ -64,6 +64,18 @@ func (r BoolRoute) Matches(event *session.Event) bool {
 	return matchRoute(fmt.Sprint(r), event)
 }
 
+// MultiRoute matches any value within a specified list of allowed routes.
+type MultiRoute[T comparable] []T
+
+func (r MultiRoute[T]) Matches(event *session.Event) bool {
+	for _, route := range r {
+		if matchRoute(fmt.Sprint(route), event) {
+			return true
+		}
+	}
+	return false
+}
+
 // baseNode provides common fields for all nodes.
 type baseNode struct {
 	name        string
@@ -195,12 +207,14 @@ func (w *Workflow) findNextNodes(currentNode Node, input any, event *session.Eve
 		}
 		if edge.Route == nil {
 			queue = append(queue, nodeInput{node: edge.To, input: input})
+			added[edge.To] = struct{}{}
 			matched = true
 			continue
 		}
 
 		if edge.Route.Matches(event) {
 			queue = append(queue, nodeInput{node: edge.To, input: input})
+			added[edge.To] = struct{}{}
 			matched = true
 		}
 	}
