@@ -56,5 +56,7 @@ func (b BaseNode) InputSchema() *jsonschema.Resolved { return nil }
 // OutputSchema returns nil to indicate no output validation schema by default.
 func (b BaseNode) OutputSchema() *jsonschema.Resolved { return nil }
 
-// ValidateInput returns the input unchanged as a default passthrough implementation.
-func (b BaseNode) ValidateInput(input any) (any, error) { return input, nil }
+// ValidateInput validates and coerces the input using the node's input schema.
+func (b BaseNode) ValidateInput(in any) (any, error) {
+	return defaultValidateInput(in, b.inputSchema)
+}
