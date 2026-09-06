@@ -786,8 +786,10 @@ func TestApplyGenerationConfigServiceTier(t *testing.T) {
 		{genai.ServiceTierPriority, responses.ResponseNewParamsServiceTierPriority},
 		// genai's "standard" is what OpenAI calls "default".
 		{genai.ServiceTierStandard, responses.ResponseNewParamsServiceTierDefault},
-		// Explicitly declining to choose is what auto means.
-		{genai.ServiceTierUnspecified, responses.ResponseNewParamsServiceTierAuto},
+		// genai calls this one "Default service tier, which is standard", so it
+		// lands where standard does rather than on auto, which would hand the
+		// caller whichever tier their project happens to have configured.
+		{genai.ServiceTierUnspecified, responses.ResponseNewParamsServiceTierDefault},
 	}
 
 	for _, tc := range tests {
@@ -1029,9 +1031,12 @@ func TestApplyGenerationConfigKeepsNamedErrorPrecedence(t *testing.T) {
 			Logprobs:         genai.Ptr(int32(5)),
 			ResponseMIMEType: "text/csv",
 		}, ErrUnsupportedMIMEType},
+		// The budget has to be one applyThinkingConfig actually rejects, or
+		// there is no competing error for the named one to win against and the
+		// case passes whether precedence works or not.
 		{"StopSequences over ThinkingConfig", &genai.GenerateContentConfig{
 			StopSequences:  []string{"STOP"},
-			ThinkingConfig: &genai.ThinkingConfig{},
+			ThinkingConfig: &genai.ThinkingConfig{ThinkingBudget: genai.Ptr(int32(-2))},
 		}, ErrStopSequencesNotSupported},
 	}
 
@@ -1737,5 +1742,103 @@ func assertReRangeable(t *testing.T, stream bool) {
 	}
 	if calls != 2 {
 		t.Errorf("server saw %d calls, want 2: the second range did not reach it", calls)
+	}
+}
+
+// The rest of HTTPOptions describes the Gemini wire format, which is not the
+// request being sent, so it is named rather than quietly doing nothing.
+//
+// Every entry in unsupportedHTTPOptionFields is driven with a live value, not
+// merely named: a predicate is a closure, and a reflection test over the names
+// stays green however that closure is edited. An entry missing here is a field
+// dropped in silence at the exported entry point.
+func TestApplyGenerationConfigRejectsGeminiShapedHTTPOptions(t *testing.T) {
+	retry := int32(3)
+	tests := []struct {
+		field string
+		opts  *genai.HTTPOptions
+	}{
+		{"BaseURL", &genai.HTTPOptions{BaseURL: "https://example.test"}},
+		{"BaseURLResourceScope", &genai.HTTPOptions{BaseURLResourceScope: genai.ResourceScope("global")}},
+		{"APIVersion", &genai.HTTPOptions{APIVersion: "v1beta"}},
+		{"ExtraBody", &genai.HTTPOptions{ExtraBody: map[string]any{"k": "v"}}},
+		{"ExtrasRequestProvider", &genai.HTTPOptions{
+			ExtrasRequestProvider: func(m map[string]any) map[string]any { return m },
+		}},
+		{"RetryOptions", &genai.HTTPOptions{RetryOptions: &genai.HTTPRetryOptions{Attempts: &retry}}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.field, func(t *testing.T) {
+			err := applyGenerationConfig(&responses.ResponseNewParams{}, &genai.GenerateContentConfig{
+				HTTPOptions: tc.opts,
+			})
+			if !errors.Is(err, ErrUnsupportedConfigField) {
+				t.Fatalf("applyGenerationConfig() error = %v, want %v", err, ErrUnsupportedConfigField)
+			}
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("applyGenerationConfig() error = %q, want it to name %q", err, tc.field)
+			}
+		})
+	}
+}
+
+// Pairs the table with the cases above, so adding a predicate without a case
+// fails here rather than passing silently. The sibling table is guarded the
+// same way by TestApplyGenerationConfigRejectsUnsupportedFields.
+func TestEveryUnsupportedHTTPOptionFieldIsDriven(t *testing.T) {
+	driven := map[string]bool{
+		"BaseURL": true, "BaseURLResourceScope": true, "APIVersion": true,
+		"ExtraBody": true, "ExtrasRequestProvider": true, "RetryOptions": true,
+	}
+	for _, field := range unsupportedHTTPOptionFields {
+		if !driven[field.name] {
+			t.Errorf("unsupportedHTTPOptionFields has %q with no case in "+
+				"TestApplyGenerationConfigRejectsGeminiShapedHTTPOptions, so its predicate is untested", field.name)
+		}
+	}
+	if len(driven) != len(unsupportedHTTPOptionFields) {
+		t.Errorf("%d cases for %d predicates", len(driven), len(unsupportedHTTPOptionFields))
+	}
+}
+
+// The accounting test above compares names against three lists, so it can only
+// show a field is listed somewhere, not that the listing is true — the cheapest
+// way to green it after genai adds a field is to write the name into
+// translated, which is exactly the silent drop it exists to prevent.
+//
+// This closes that hole from the other side: every field the lists call
+// translated must actually survive applyGenerationConfig without drawing the
+// unsupported sentinel. Fields needing a companion, a specific value, or a
+// whole subsystem to be meaningful are checked through their own tests instead.
+func TestTranslatedFieldsAreNotRejected(t *testing.T) {
+	tests := []struct {
+		field string
+		cfg   *genai.GenerateContentConfig
+	}{
+		{"Temperature", &genai.GenerateContentConfig{Temperature: genai.Ptr(float32(0.5))}},
+		{"TopP", &genai.GenerateContentConfig{TopP: genai.Ptr(float32(0.9))}},
+		{"MaxOutputTokens", &genai.GenerateContentConfig{MaxOutputTokens: 128}},
+		{"SystemInstruction", &genai.GenerateContentConfig{
+			SystemInstruction: genai.NewContentFromText("be terse", genai.RoleUser),
+		}},
+		{"ResponseMIMEType", &genai.GenerateContentConfig{ResponseMIMEType: "application/json"}},
+		{"ResponseLogprobs", &genai.GenerateContentConfig{ResponseLogprobs: true}},
+		{"Logprobs", &genai.GenerateContentConfig{ResponseLogprobs: true, Logprobs: genai.Ptr(int32(3))}},
+		{"ThinkingConfig", &genai.GenerateContentConfig{
+			ThinkingConfig: &genai.ThinkingConfig{ThinkingLevel: genai.ThinkingLevelLow},
+		}},
+		{"ServiceTier", &genai.GenerateContentConfig{ServiceTier: genai.ServiceTierFlex}},
+		{"HTTPOptions.Timeout", &genai.GenerateContentConfig{
+			HTTPOptions: &genai.HTTPOptions{Timeout: genai.Ptr(30 * time.Second)},
+		}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.field, func(t *testing.T) {
+			if err := applyGenerationConfig(&responses.ResponseNewParams{}, tc.cfg); err != nil {
+				t.Errorf("applyGenerationConfig() error = %v, want nil: %s is listed as translated", err, tc.field)
+			}
+		})
 	}
 }

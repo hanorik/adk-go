@@ -403,10 +403,11 @@ func applyGenerationConfig(params *responses.ResponseNewParams, cfg *genai.Gener
 
 // serviceTiers maps genai's processing tiers onto the Responses equivalents.
 // OpenAI offers more tiers than genai can name; the ones genai has all
-// correspond. An explicit "unspecified" is the caller asking not to choose,
-// which is what auto means.
+// correspond. "Unspecified" joins "standard" on default rather than auto,
+// because genai documents it as "Default service tier, which is standard" and
+// auto would instead hand the caller whichever tier the project has configured.
 var serviceTiers = map[genai.ServiceTier]responses.ResponseNewParamsServiceTier{
-	genai.ServiceTierUnspecified: responses.ResponseNewParamsServiceTierAuto,
+	genai.ServiceTierUnspecified: responses.ResponseNewParamsServiceTierDefault,
 	genai.ServiceTierStandard:    responses.ResponseNewParamsServiceTierDefault,
 	genai.ServiceTierFlex:        responses.ResponseNewParamsServiceTierFlex,
 	genai.ServiceTierPriority:    responses.ResponseNewParamsServiceTierPriority,
@@ -485,7 +486,8 @@ var unsupportedHTTPOptionFields = []struct {
 
 // reasoningEfforts maps every genai thinking level onto a Responses reasoning
 // effort. An explicit THINKING_LEVEL_UNSPECIFIED is distinct from unset and
-// still asks the model to think, so it resolves to medium.
+// still asks the model to think, so it resolves to medium as adk-python does —
+// unlike a dynamic budget, which has no such precedent and defers to the model.
 var reasoningEfforts = map[genai.ThinkingLevel]shared.ReasoningEffort{
 	genai.ThinkingLevelUnspecified: shared.ReasoningEffortMedium,
 	genai.ThinkingLevelMinimal:     shared.ReasoningEffortMinimal,
@@ -564,7 +566,9 @@ func applyThinkingConfig(params *responses.ResponseNewParams, cfg *genai.Thinkin
 }
 
 // rejectUntranslatableValues catches the settings whose field is translated but
-// whose particular value is not, which the presence check below cannot see.
+// whose particular value would vanish, which the presence check below cannot
+// see. A value that reaches the wire and draws a named 400 is outside this rule
+// — an out-of-range Logprobs is already diagnosable, so it is left to the API.
 //
 // It runs after every named error so that a caller who set one of those too
 // gets the error they have always got, rather than this sentinel jumping the
