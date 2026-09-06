@@ -627,14 +627,11 @@ func TestApplyGenerationConfigRejectsUnknownThinkingLevel(t *testing.T) {
 }
 
 // Every level genai declares today maps to an effort, so a caller setting a
-// valid level gets reasoning rather than an error.
+// valid one gets reasoning rather than an error.
 //
-// Go cannot enumerate the constants of a string enum, so this list is written
-// out and cannot notice a level genai adds later. It does not need to: an
-// unmapped level is rejected by name at runtime, which is a diagnosable failure
-// rather than the silent drop this package exists to avoid. The length check
-// below only catches the opposite drift — an entry added to the map that is not
-// a level, or one this list forgot.
+// Go cannot enumerate a string enum's constants, so a level genai adds later is
+// caught at runtime by name instead, and the length check below only catches an
+// entry added to the map that this list forgot.
 func TestReasoningEffortsCoverEveryThinkingLevel(t *testing.T) {
 	levels := []genai.ThinkingLevel{
 		genai.ThinkingLevelUnspecified,
@@ -867,15 +864,13 @@ func TestApplyGenerationConfigRejectsNonPositiveTimeout(t *testing.T) {
 	}
 }
 
-// The reason no header crosses, pinned against the SDK rather than asserted in
-// prose: openai-go records any case-insensitive Authorization as an override and
-// then skips attaching the configured API key, so forwarding a caller's header
-// would replace the real credential rather than accompany it. WithHeaderAdd is
-// no safer than WithHeader here, despite the name.
+// Pins against the SDK rather than asserting in prose: openai-go records any
+// case-insensitive Authorization as an override and then skips attaching the
+// configured API key, so forwarding a caller's header would replace the real
+// credential rather than accompany it.
 //
-// This drives openai-go directly. If a future version stops treating the header
-// as an override, this test fails and Headers can be reconsidered — until then
-// it documents why applyGenerationConfig refuses them.
+// It drives openai-go directly, so a future version that stops overriding fails
+// this test and Headers can be reconsidered on evidence.
 func TestCallerAuthorizationHeaderDisplacesTheAPIKey(t *testing.T) {
 	var got string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1545,17 +1540,14 @@ func TestBuildOpenAIParamsPreservesLargeJSONSchemaIntegers(t *testing.T) {
 	}
 }
 
-// The timeout has to reach the HTTP request, not merely be computed and left
-// on the floor. Asserting that requestTimeout returns the right duration proves
-// nothing about the wiring in GenerateContent: deleting the context.WithTimeout
-// block from generate and generateStream leaves such a test passing, and
-// Timeout is the only thing HTTPOptions still does, so that wiring is its
-// entire value.
+// The timeout has to reach the request, not merely be computed: asserting that
+// requestTimeout returns the right duration says nothing about the
+// context.WithTimeout wiring in generate and generateStream, which is the only
+// thing HTTPOptions still does.
 //
-// The server answers slowly but successfully. A wired timeout therefore fails
-// the call quickly, while an unwired one waits and succeeds — so the two
-// outcomes differ in kind, not just in timing, and neither depends on how
-// loaded the machine is.
+// The server answers slowly but successfully, so a wired timeout fails the call
+// quickly while an unwired one waits and succeeds — outcomes differing in kind
+// rather than in timing, and so not a function of machine load.
 func TestHTTPOptionsTimeoutReachesTheRequest(t *testing.T) {
 	const serverDelay = 3 * time.Second
 
@@ -1748,16 +1740,12 @@ func assertReRangeable(t *testing.T, stream bool) {
 	}
 }
 
-// The rest of HTTPOptions describes the Gemini wire format, which is not the
-// request being sent, so it is named rather than quietly doing nothing.
-//
-// Every entry in unsupportedHTTPOptionFields is driven with a live value, not
-// merely named: a predicate is a closure, and a reflection test over the names
-// stays green however that closure is edited. An entry missing here is a field
-// dropped in silence at the exported entry point.
 // geminiShapedHTTPOptions carries one live value per unsupportedHTTPOptionFields
 // entry, shared so the pairing test below derives from the cases that actually
-// run rather than from a second list that can agree with neither.
+// run rather than from a second list agreeing with neither.
+//
+// Live values matter because a predicate is a closure: a reflection test over
+// the names stays green however that closure is edited.
 var geminiShapedHTTPOptions = []struct {
 	field string
 	opts  *genai.HTTPOptions
@@ -1807,15 +1795,12 @@ func TestEveryUnsupportedHTTPOptionFieldIsDriven(t *testing.T) {
 	}
 }
 
-// The accounting test above compares names against three lists, so it can only
-// show a field is listed somewhere, not that the listing is true — the cheapest
-// way to green it after genai adds a field is to write the name into
-// translated, which is exactly the silent drop it exists to prevent.
+// Closes the accounting test's blind side: that one compares names against
+// three lists, so writing a new field into translated greens it while the field
+// is still dropped.
 //
-// This closes that hole from the other side: every field the lists call
-// translated must actually survive applyGenerationConfig without drawing the
-// unsupported sentinel. Fields needing a companion, a specific value, or a
-// whole subsystem to be meaningful are checked through their own tests instead.
+// Here every field the lists call translated has to reach the params, with the
+// ones needing a whole subsystem to be meaningful left to their own tests.
 func TestTranslatedFieldsAreNotRejected(t *testing.T) {
 	tests := []struct {
 		field string
