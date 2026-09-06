@@ -279,7 +279,7 @@ func TestBuildOpenAIParams_UnsupportedPart(t *testing.T) {
 // assistant output message carrying two text items, "call:name/id",
 // "output:id".
 //
-// Input and output messages are rendered distinctly on purpose. They differ in
+// Input and output messages are rendered distinctly on purpose: they differ in
 // the content type they carry — "input_text" against "output_text" — and the
 // Responses API rejects the former on the assistant role, so a replayed
 // assistant turn emitted as an input message would be a real defect that a
@@ -361,6 +361,13 @@ func TestBuildOpenAIParams_DropsReplayedThoughts(t *testing.T) {
 			name:     "blank_text_is_skipped_beside_real_text",
 			contents: []*genai.Content{modelTurn(&genai.Part{Text: "   "}, &genai.Part{Text: "real"})},
 			want:     []string{"out/assistant:real"},
+		},
+		{
+			// The same on the user path, which builds an input message through
+			// newMessage rather than newOutputMessage.
+			name:     "blank_text_is_skipped_beside_real_text_in_user_turn",
+			contents: []*genai.Content{userTurn(&genai.Part{Text: "   "}, &genai.Part{Text: "real"})},
+			want:     []string{"in/user:real"},
 		},
 		{
 			name:     "thought_between_answers",
@@ -718,13 +725,21 @@ func TestBuildOpenAIParams_NoContentsSentinelIdentity(t *testing.T) {
 			false,
 		},
 		{
-			// And across turns, since the flag outlives a content block.
-			"blank_reasoning_turn_then_real_one",
+			// The real turn comes first, so a flag reset per content block
+			// would show up here where the reverse order would hide it.
+			"real_reasoning_turn_then_blank_one",
 			[]*genai.Content{
-				{Role: string(genai.RoleModel), Parts: []*genai.Part{{Text: "   ", Thought: true}}},
 				{Role: string(genai.RoleModel), Parts: []*genai.Part{{Text: "scratch", Thought: true}}},
+				{Role: string(genai.RoleModel), Parts: []*genai.Part{{Text: "   ", Thought: true}}},
 			},
 			false,
+		},
+		{
+			// The user path builds an input message rather than an output one,
+			// and skips blank text through a different function.
+			"only_blank_text_user_turn",
+			[]*genai.Content{{Role: string(genai.RoleUser), Parts: []*genai.Part{{Text: "   "}}}},
+			true,
 		},
 	}
 	for _, tt := range tests {
@@ -836,14 +851,12 @@ func TestReplayedReasoning(t *testing.T) {
 }
 
 // accountedForFields is the specification unsupportedPayload implements: the
-// genai.Part fields convertContents knows what to do with, and why. Every other
-// field must be reported rather than dropped, which is what the walk below
-// asserts field by field.
+// genai.Part fields convertContents knows what to do with, and why.
 //
-// The list is deliberately restated here instead of derived from the production
-// code, so that widening what the package silently accepts has to be written
-// down twice. A field genai adds later is absent from it by construction, so
-// the walk demands it be reported — the failure a denylist would not produce.
+// The list is deliberately restated here instead of derived from the
+// production code, so a field genai adds later is absent from it by
+// construction and the walk below demands it be reported instead of silently
+// accepted — the failure a denylist would not produce.
 var accountedForFields = map[string]string{
 	"Text":             "sent, or dropped when it is reasoning",
 	"Thought":          "the marker deciding which",
@@ -890,8 +903,10 @@ func TestUnsupportedPayload_WalksEveryPartField(t *testing.T) {
 					{Role: string(genai.RoleModel), Parts: []*genai.Part{ride.part}},
 				}}
 				_, err := buildOpenAIParams("fallback", req)
-				if err == nil || !strings.Contains(err.Error(), want) {
-					t.Errorf("buildOpenAIParams() err = %v for %s carried %s, want it to mention %q",
+				// HasSuffix rather than Contains: one field name can prefix
+				// another, and reporting the shorter one must not pass.
+				if err == nil || !strings.HasSuffix(err.Error(), want) {
+					t.Errorf("buildOpenAIParams() err = %v for %s carried %s, want it to end with %q",
 						err, field.Name, ride.name, want)
 				}
 			}

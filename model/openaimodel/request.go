@@ -202,14 +202,13 @@ func convertContents(contents []*genai.Content) (responses.ResponseInputParam, b
 }
 
 // replayedReasoning reports whether part is reasoning carried over from an
-// earlier turn that carries nothing else, so dropping it loses nothing.
+// earlier turn that carries nothing else, so dropping it loses nothing: the
+// Responses API accepts reasoning back only as an input item referencing the
+// id that produced it, an id ADK does not carry, so sent as assistant text it
+// would read as words the model never said.
 //
-// The Responses API takes reasoning back only as an input item referencing the
-// id of the item that produced it, and ADK carries no such ids; sent as
-// ordinary assistant text it becomes words the model appears to have said.
-//
-// Whether to send a part's text is decided by part.Thought alone: a part can
-// carry both reasoning text and a call, and the call must survive.
+// Whether to send a part's text is decided by part.Thought alone, because a
+// part can carry both reasoning text and a call, and the call must survive.
 func replayedReasoning(part *genai.Part) bool {
 	if part == nil {
 		return false
