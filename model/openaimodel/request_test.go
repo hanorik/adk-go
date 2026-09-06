@@ -356,6 +356,13 @@ func TestBuildOpenAIParams_DropsReplayedThoughts(t *testing.T) {
 			want: []string{"in/user:q", "in/user:q2"},
 		},
 		{
+			// The blank-skip is per text item, not per message: it is what
+			// makes dropping blank reasoning a no-op, so it is pinned here.
+			name:     "blank_text_is_skipped_beside_real_text",
+			contents: []*genai.Content{modelTurn(&genai.Part{Text: "   "}, &genai.Part{Text: "real"})},
+			want:     []string{"out/assistant:real"},
+		},
+		{
 			name:     "thought_between_answers",
 			contents: []*genai.Content{modelTurn(&genai.Part{Text: "A"}, thought("T"), &genai.Part{Text: "B"})},
 			want:     []string{"out/assistant:A|B"},
@@ -644,10 +651,9 @@ func TestBuildOpenAIParams_DropsReplayedThoughts(t *testing.T) {
 }
 
 // TestBuildOpenAIParams_NoContentsSentinelIdentity pins which requests get the
-// bare ErrNoContents and which get it wrapped. The distinction is not cosmetic:
-// a caller comparing with == rather than errors.Is sees only the bare one, so
-// wrapping a request that arrived empty would silently stop matching. Only the
-// drop emptying a request the caller did fill earns the wrap.
+// bare ErrNoContents and which get it wrapped, because a caller comparing with
+// == rather than errors.Is sees only the bare one. Only a drop that suppressed
+// text the model would otherwise have seen earns the wrap.
 func TestBuildOpenAIParams_NoContentsSentinelIdentity(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -700,6 +706,24 @@ func TestBuildOpenAIParams_NoContentsSentinelIdentity(t *testing.T) {
 			[]*genai.Content{{Role: string(genai.RoleModel), Parts: []*genai.Part{
 				{Text: "scratch", Thought: true}, {Text: "   "},
 			}}},
+			false,
+		},
+		{
+			// The flag accumulates rather than tracking the last part, so a
+			// blank thought after a real one cannot talk it back down.
+			"real_reasoning_then_blank_reasoning",
+			[]*genai.Content{{Role: string(genai.RoleModel), Parts: []*genai.Part{
+				{Text: "scratch", Thought: true}, {Text: "   ", Thought: true},
+			}}},
+			false,
+		},
+		{
+			// And across turns, since the flag outlives a content block.
+			"blank_reasoning_turn_then_real_one",
+			[]*genai.Content{
+				{Role: string(genai.RoleModel), Parts: []*genai.Part{{Text: "   ", Thought: true}}},
+				{Role: string(genai.RoleModel), Parts: []*genai.Part{{Text: "scratch", Thought: true}}},
+			},
 			false,
 		},
 	}

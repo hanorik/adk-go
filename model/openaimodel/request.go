@@ -153,14 +153,11 @@ func convertContents(contents []*genai.Content) (responses.ResponseInputParam, b
 			case sendText:
 				textParts = append(textParts, part.Text)
 			case part.Text != "" || replayedReasoning(part):
-				// Reasoning is dropped, but the role it arrived under is still
-				// checked, on a bare thought as much as on one carrying text:
-				// dropping a part must not silence an error the same turn
-				// would have raised had it been an answer.
+				// Dropping reasoning must not hide a bad role, so the check
+				// still runs. The drop counts toward the emptied-request
+				// report only when it suppressed text the model would
+				// otherwise have seen, blank text being skipped either way.
 				if strings.TrimSpace(part.Text) != "" {
-					// Only reasoning that would otherwise have reached the
-					// model counts: blank text is skipped downstream anyway,
-					// so dropping it must not disturb the bare sentinel.
 					droppedReasoning = true
 				}
 				if _, err := normalizeRole(curRole); err != nil {
