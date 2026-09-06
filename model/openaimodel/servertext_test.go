@@ -37,7 +37,8 @@ func TestClipServerText(t *testing.T) {
 		{name: "blank", in: "  \n\t ", wantRunes: 0},
 		{
 			// Exactly at the cap: nothing was dropped, so nothing may claim it
-			// was. A >= in place of the > would break this and nothing else.
+			// was. Paired with the row below, it pins the boundary at exactly
+			// maxServerTextRunes, catching an off-by-one on either side.
 			name:      "exactly the cap",
 			in:        strings.Repeat("A", maxServerTextRunes),
 			wantRunes: maxServerTextRunes,
@@ -99,9 +100,14 @@ func TestClipServerText(t *testing.T) {
 func FuzzClipServerText(f *testing.F) {
 	for _, seed := range []string{
 		"", "  ", "upstream exploded", "line\r\nforged", "\x1b[2J", "\u2028sep",
+		// An ellipsis the server itself sent, which is not a truncation marker.
+		"rate limited, retrying …",
 		strings.Repeat("A", maxServerTextRunes),
 		strings.Repeat("世", maxServerTextRunes+1),
 		strings.Repeat("🙂", maxServerTextRunes+1),
+		// Clipped mid-whitespace, so the marker assertion below has something
+		// to bite on without waiting for the fuzzer to find it.
+		strings.Repeat("A", 250) + strings.Repeat(" ", 10) + strings.Repeat("B", 10),
 	} {
 		f.Add(seed)
 	}
@@ -116,9 +122,14 @@ func FuzzClipServerText(f *testing.F) {
 		if strings.TrimSpace(got) != got {
 			t.Errorf("clipServerText(%q) = %q, want no leading or trailing space", in, got)
 		}
-		// The marker sits at the end, so trailing space hides behind it.
-		if body, marked := strings.CutSuffix(got, "…"); marked && strings.TrimSpace(body) != body {
-			t.Errorf("clipServerText(%q) = %q, want no space before the truncation marker", in, got)
+		// The marker sits at the end, so trailing space hides behind it. Gated
+		// on the input having actually been clipped, because a trailing "…" the
+		// server sent is its own text and the space before it is not ours to
+		// judge.
+		if utf8.RuneCountInString(strings.TrimSpace(in)) > maxServerTextRunes {
+			if body, marked := strings.CutSuffix(got, "…"); marked && strings.TrimSpace(body) != body {
+				t.Errorf("clipServerText(%q) = %q, want no space before the truncation marker", in, got)
+			}
 		}
 	})
 }
@@ -293,6 +304,9 @@ func TestStreamTranslator_ErrorEvent_ServerText(t *testing.T) {
 		if err == nil {
 			t.Fatal("process() err = nil, want the stream error even with nothing to quote")
 		}
+		if want := "openai stream error"; err.Error() != want {
+			t.Errorf("process() err = %q, want %q", err, want)
+		}
 	})
 
 	t.Run("a huge message is capped", func(t *testing.T) {
@@ -308,6 +322,19 @@ func TestStreamTranslator_ErrorEvent_ServerText(t *testing.T) {
 		}
 		if got, max := utf8.RuneCountInString(err.Error()), maxServerTextRunes+64; got > max {
 			t.Errorf("process() err is %d runes, want at most %d", got, max)
+		}
+	})
+
+	// The literal, because every other assertion here is a property: without
+	// this row the prefix could be reworded and the package would stay green.
+	t.Run("a short message is quoted, not altered", func(t *testing.T) {
+		event := decodeEvent(t, `{"type":"error","message":"boom"}`)
+		_, err := newStreamTranslator().process(event)
+		if err == nil {
+			t.Fatal("process() err = nil, want the stream error")
+		}
+		if want := `openai stream error: "boom"`; err.Error() != want {
+			t.Errorf("process() err = %q, want %q", err, want)
 		}
 	})
 }
