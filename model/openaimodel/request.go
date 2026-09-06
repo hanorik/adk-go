@@ -139,14 +139,15 @@ func convertContents(contents []*genai.Content) (responses.ResponseInputParam, b
 			if part == nil {
 				continue
 			}
-			// A part is read field by field rather than as one choice among
-			// alternatives, because it can carry several at once. Anything
-			// this package cannot send is reported first and on its own, so
-			// that something sendable elsewhere on the same part — text, or a
-			// function call — cannot carry it out of the request unannounced.
+			// Reported before anything is emitted, so that a field this
+			// package cannot send is named even when text or a call rides on
+			// the same part and would otherwise have carried it out unnoticed.
 			if field := unsupportedPayload(part); field != "" {
 				return nil, false, fmt.Errorf("openai: unsupported content part: %s", field)
 			}
+			// Text is read independently of a call or a response because one
+			// part can carry both. A call and a response on the same part are
+			// still alternatives, and the response is dropped, as on main.
 			sendText := part.Text != "" && !part.Thought
 			switch {
 			case sendText:
@@ -156,7 +157,12 @@ func convertContents(contents []*genai.Content) (responses.ResponseInputParam, b
 				// checked, on a bare thought as much as on one carrying text:
 				// dropping a part must not silence an error the same turn
 				// would have raised had it been an answer.
-				droppedReasoning = true
+				if strings.TrimSpace(part.Text) != "" {
+					// Only reasoning that would otherwise have reached the
+					// model counts: blank text is skipped downstream anyway,
+					// so dropping it must not disturb the bare sentinel.
+					droppedReasoning = true
+				}
 				if _, err := normalizeRole(curRole); err != nil {
 					return nil, false, err
 				}
@@ -183,11 +189,10 @@ func convertContents(contents []*genai.Content) (responses.ResponseInputParam, b
 				}
 				items = append(items, responses.ResponseInputItemUnionParam{OfFunctionCallOutput: respParam})
 			case !sendText && !replayedReasoning(part):
-				// The part put no text in the buffer, carries no call or
-				// response, and is not reasoning worth dropping: nothing in it
-				// reaches the request, so say so rather than let an empty part
-				// pass for a converted one.
-				return nil, false, errors.New("openai: content part carries nothing to send")
+				// Nothing in the part reaches the request. It keeps the
+				// unsupported-content-part prefix the single message used
+				// before, so a caller matching on that still matches here.
+				return nil, false, errors.New("openai: unsupported content part: carries nothing to send")
 			}
 		}
 		// After processing all parts in a content block, we flush any remaining text.

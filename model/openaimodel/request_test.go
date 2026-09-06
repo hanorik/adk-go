@@ -560,7 +560,7 @@ func TestBuildOpenAIParams_DropsReplayedThoughts(t *testing.T) {
 				genai.NewContentFromText("q", genai.RoleUser),
 				userTurn(&genai.Part{PartMetadata: map[string]any{"src": "a"}}),
 			},
-			wantErrText: "carries nothing to send",
+			wantErrText: "unsupported content part: carries nothing to send",
 		},
 		{
 			// buildContentsDefault filters these out upstream, so this is the
@@ -571,7 +571,7 @@ func TestBuildOpenAIParams_DropsReplayedThoughts(t *testing.T) {
 				genai.NewContentFromText("q", genai.RoleUser),
 				userTurn(&genai.Part{}),
 			},
-			wantErrText: "carries nothing to send",
+			wantErrText: "unsupported content part: carries nothing to send",
 		},
 		{
 			// Text riding on a response that pairs with nothing. The response
@@ -668,8 +668,38 @@ func TestBuildOpenAIParams_NoContentsSentinelIdentity(t *testing.T) {
 			true,
 		},
 		{
+			// The two together, which is where the rule earns its keep: the
+			// part is reasoning, so it is dropped, but its text was blank and
+			// would have been skipped anyway, so the drop is not what emptied
+			// the request and the bare sentinel stands.
+			"only_blank_reasoning",
+			[]*genai.Content{{Role: string(genai.RoleModel), Parts: []*genai.Part{{Text: "   ", Thought: true}}}},
+			true,
+		},
+		{
+			// A thought with nothing to suppress: it leaves the request, but
+			// no text of it would ever have reached the model.
+			"only_bare_thought",
+			[]*genai.Content{{Role: string(genai.RoleModel), Parts: []*genai.Part{{Thought: true}}}},
+			true,
+		},
+		{
+			"only_signature",
+			[]*genai.Content{{Role: string(genai.RoleModel), Parts: []*genai.Part{{ThoughtSignature: []byte("sig")}}}},
+			true,
+		},
+		{
 			"only_reasoning",
 			[]*genai.Content{{Role: string(genai.RoleModel), Parts: []*genai.Part{{Text: "scratch", Thought: true}}}},
+			false,
+		},
+		{
+			// The drop still earns the wrap when it suppressed real text, even
+			// though a blank sibling is what the request was left with.
+			"reasoning_and_blank_answer",
+			[]*genai.Content{{Role: string(genai.RoleModel), Parts: []*genai.Part{
+				{Text: "scratch", Thought: true}, {Text: "   "},
+			}}},
 			false,
 		},
 	}
@@ -827,17 +857,49 @@ func TestUnsupportedPayload_WalksEveryPartField(t *testing.T) {
 					got, field.Name, field.Name)
 			}
 			// The predicate agreeing is not enough: the caller has to see the
-			// error. Building the request proves convertContents does not
-			// swallow it on the way out.
-			req := &model.LLMRequest{Contents: []*genai.Content{
-				{Role: string(genai.RoleUser), Parts: []*genai.Part{part}},
-			}}
-			_, err := buildOpenAIParams("fallback", req)
+			// error, and it has to see it for the shape this change is about —
+			// the field riding on something sendable, which is what used to
+			// carry it out of the request unnoticed.
 			want := "unsupported content part: " + field.Name
-			if err == nil || !strings.Contains(err.Error(), want) {
-				t.Errorf("buildOpenAIParams() err = %v, want it to mention %q", err, want)
+			for _, ride := range ridingShapes(part) {
+				req := &model.LLMRequest{Contents: []*genai.Content{
+					{Role: string(genai.RoleModel), Parts: []*genai.Part{ride.part}},
+				}}
+				_, err := buildOpenAIParams("fallback", req)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Errorf("buildOpenAIParams() err = %v for %s carried %s, want it to mention %q",
+						err, field.Name, ride.name, want)
+				}
 			}
 		})
+	}
+}
+
+// ridingShapes returns part as it arrives alone and alongside each thing that
+// would otherwise be emitted for it, so a field cannot be reported on its own
+// and slip through on a part that also had something to send.
+func ridingShapes(part *genai.Part) []struct {
+	name string
+	part *genai.Part
+} {
+	withText := *part
+	withText.Text = "here you go"
+
+	withThought := *part
+	withThought.Text = "scratchpad"
+	withThought.Thought = true
+
+	withCall := *part
+	withCall.FunctionCall = &genai.FunctionCall{Name: "lookup", ID: "c1"}
+
+	return []struct {
+		name string
+		part *genai.Part
+	}{
+		{"alone", part},
+		{"on text", &withText},
+		{"on reasoning text", &withThought},
+		{"on a function call", &withCall},
 	}
 }
 
