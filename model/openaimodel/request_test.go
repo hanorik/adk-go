@@ -983,7 +983,7 @@ func assertNoHeaderReachesTheWire(t *testing.T, stream bool) {
 		t.Errorf("X-Goog-Api-Key = %s, want absent: a Gemini credential reached the provider", redact(v))
 	}
 	if v := got.Get("X-Trace-Id"); v != "" {
-		t.Errorf("X-Trace-Id = %q, want absent: headers are not forwarded", v)
+		t.Errorf("X-Trace-Id = %s, want absent: headers are not forwarded", redact(v))
 	}
 }
 
@@ -1609,6 +1609,9 @@ func TestHTTPOptionsTimeoutReachesTheRequest(t *testing.T) {
 				t.Fatalf("call succeeded after %v with a %v timeout configured: "+
 					"the timeout never reached the request", elapsed, timeout)
 			}
+			// Secondary: the mutation is already caught by the call succeeding
+			// above, so this only has to be loose enough not to flake on a
+			// loaded machine while still catching a wildly wrong bound.
 			if elapsed >= serverDelay {
 				t.Errorf("call took %v, i.e. it waited for the server rather than for its %v timeout", elapsed, timeout)
 			}
@@ -1752,23 +1755,25 @@ func assertReRangeable(t *testing.T, stream bool) {
 // merely named: a predicate is a closure, and a reflection test over the names
 // stays green however that closure is edited. An entry missing here is a field
 // dropped in silence at the exported entry point.
-func TestApplyGenerationConfigRejectsGeminiShapedHTTPOptions(t *testing.T) {
-	retry := int32(3)
-	tests := []struct {
-		field string
-		opts  *genai.HTTPOptions
-	}{
-		{"BaseURL", &genai.HTTPOptions{BaseURL: "https://example.test"}},
-		{"BaseURLResourceScope", &genai.HTTPOptions{BaseURLResourceScope: genai.ResourceScope("global")}},
-		{"APIVersion", &genai.HTTPOptions{APIVersion: "v1beta"}},
-		{"ExtraBody", &genai.HTTPOptions{ExtraBody: map[string]any{"k": "v"}}},
-		{"ExtrasRequestProvider", &genai.HTTPOptions{
-			ExtrasRequestProvider: func(m map[string]any) map[string]any { return m },
-		}},
-		{"RetryOptions", &genai.HTTPOptions{RetryOptions: &genai.HTTPRetryOptions{Attempts: &retry}}},
-	}
+// geminiShapedHTTPOptions carries one live value per unsupportedHTTPOptionFields
+// entry, shared so the pairing test below derives from the cases that actually
+// run rather than from a second list that can agree with neither.
+var geminiShapedHTTPOptions = []struct {
+	field string
+	opts  *genai.HTTPOptions
+}{
+	{"BaseURL", &genai.HTTPOptions{BaseURL: "https://example.test"}},
+	{"BaseURLResourceScope", &genai.HTTPOptions{BaseURLResourceScope: genai.ResourceScope("global")}},
+	{"APIVersion", &genai.HTTPOptions{APIVersion: "v1beta"}},
+	{"ExtraBody", &genai.HTTPOptions{ExtraBody: map[string]any{"k": "v"}}},
+	{"ExtrasRequestProvider", &genai.HTTPOptions{
+		ExtrasRequestProvider: func(m map[string]any) map[string]any { return m },
+	}},
+	{"RetryOptions", &genai.HTTPOptions{RetryOptions: &genai.HTTPRetryOptions{Attempts: genai.Ptr(int32(3))}}},
+}
 
-	for _, tc := range tests {
+func TestApplyGenerationConfigRejectsGeminiShapedHTTPOptions(t *testing.T) {
+	for _, tc := range geminiShapedHTTPOptions {
 		t.Run(tc.field, func(t *testing.T) {
 			err := applyGenerationConfig(&responses.ResponseNewParams{}, &genai.GenerateContentConfig{
 				HTTPOptions: tc.opts,
@@ -1783,18 +1788,18 @@ func TestApplyGenerationConfigRejectsGeminiShapedHTTPOptions(t *testing.T) {
 	}
 }
 
-// Pairs the table with the cases above, so adding a predicate without a case
-// fails here rather than passing silently. The sibling table is guarded the
-// same way by TestApplyGenerationConfigRejectsUnsupportedFields.
+// Pairs the table with the cases above, reading both rather than restating
+// either, so a predicate added without a case fails here instead of shipping
+// untested. The sibling table is guarded the same way.
 func TestEveryUnsupportedHTTPOptionFieldIsDriven(t *testing.T) {
-	driven := map[string]bool{
-		"BaseURL": true, "BaseURLResourceScope": true, "APIVersion": true,
-		"ExtraBody": true, "ExtrasRequestProvider": true, "RetryOptions": true,
+	driven := make(map[string]bool, len(geminiShapedHTTPOptions))
+	for _, tc := range geminiShapedHTTPOptions {
+		driven[tc.field] = true
 	}
 	for _, field := range unsupportedHTTPOptionFields {
 		if !driven[field.name] {
 			t.Errorf("unsupportedHTTPOptionFields has %q with no case in "+
-				"TestApplyGenerationConfigRejectsGeminiShapedHTTPOptions, so its predicate is untested", field.name)
+				"geminiShapedHTTPOptions, so its predicate never runs", field.name)
 		}
 	}
 	if len(driven) != len(unsupportedHTTPOptionFields) {
@@ -1836,8 +1841,21 @@ func TestTranslatedFieldsAreNotRejected(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.field, func(t *testing.T) {
-			if err := applyGenerationConfig(&responses.ResponseNewParams{}, tc.cfg); err != nil {
-				t.Errorf("applyGenerationConfig() error = %v, want nil: %s is listed as translated", err, tc.field)
+			params := &responses.ResponseNewParams{}
+			if err := applyGenerationConfig(params, tc.cfg); err != nil {
+				t.Fatalf("applyGenerationConfig() error = %v, want nil: %s is listed as translated", err, tc.field)
+			}
+			// Listed as translated means it reaches the params, not merely that
+			// it is tolerated; HTTPOptions.Timeout is the one that lands
+			// elsewhere, on the context, so it is checked through requestTimeout.
+			if tc.field == "HTTPOptions.Timeout" {
+				if requestTimeout(tc.cfg) == 0 {
+					t.Error("requestTimeout() = 0, want the configured bound")
+				}
+				return
+			}
+			if reflect.DeepEqual(*params, responses.ResponseNewParams{}) {
+				t.Errorf("%s left the params untouched, so it is not translated", tc.field)
 			}
 		})
 	}

@@ -402,10 +402,8 @@ func applyGenerationConfig(params *responses.ResponseNewParams, cfg *genai.Gener
 }
 
 // serviceTiers maps genai's processing tiers onto the Responses equivalents.
-// OpenAI offers more tiers than genai can name; the ones genai has all
-// correspond. "Unspecified" joins "standard" on default rather than auto,
-// because genai documents it as "Default service tier, which is standard" and
-// auto would instead hand the caller whichever tier the project has configured.
+// "Unspecified" joins "standard" on default rather than auto, because genai
+// documents it as "Default service tier, which is standard".
 var serviceTiers = map[genai.ServiceTier]responses.ResponseNewParamsServiceTier{
 	genai.ServiceTierUnspecified: responses.ResponseNewParamsServiceTierDefault,
 	genai.ServiceTierStandard:    responses.ResponseNewParamsServiceTierDefault,
@@ -413,20 +411,14 @@ var serviceTiers = map[genai.ServiceTier]responses.ResponseNewParamsServiceTier{
 	genai.ServiceTierPriority:    responses.ResponseNewParamsServiceTierPriority,
 }
 
-// requestTimeout reports the bound the caller asked for, or zero for none.
+// requestTimeout reports the bound the caller asked for, or zero for none; the
+// caller applies it to the context, which bounds retries as openai-go's own
+// per-request option would not, and on a streamed turn spans the consumer's
+// time in the range body.
 //
-// It is applied as a deadline on the whole call rather than through openai-go's
-// per-request timeout option, because those two mean different things: the SDK
-// applies its option inside the retry loop, so with the default of two retries
-// a caller asking for five seconds could wait fifteen. genai documents this
-// field as the timeout for the request, and a deadline on the context bounds
-// the request including whatever retrying it takes.
-//
-// Zero and negative are treated as unset, which applyGenerationConfig rejects
-// before a request is built. The guard is repeated here rather than assumed,
-// because a non-positive value means "no deadline at all" and would lift the
-// caller's bound instead of applying it, and a function this small should not
-// depend on being called in the right order to be safe.
+// Non-positive is treated as unset here rather than trusted to
+// applyGenerationConfig having rejected it, since openai-go reads zero as no
+// deadline at all.
 func requestTimeout(cfg *genai.GenerateContentConfig) time.Duration {
 	if cfg == nil || cfg.HTTPOptions == nil || cfg.HTTPOptions.Timeout == nil {
 		return 0
@@ -438,26 +430,10 @@ func requestTimeout(cfg *genai.GenerateContentConfig) time.Duration {
 }
 
 // ignoredHTTPOptionFields names the HTTPOptions fields this package neither
-// translates nor rejects. It is the one deliberate silent drop in the config
-// surface, and both halves of that — dropping rather than forwarding, and
-// dropping rather than refusing — are deliberate.
-//
-// Not forwarded, because two things go wrong. An Authorization header does not
-// join the client's credentials, it replaces them: openai-go records any
-// case-insensitive "Authorization" as an override and ApplySecurity then
-// returns before attaching the configured API key, so the request would go out
-// authenticated by the caller's header alone. And a credential meant for
-// Gemini, x-goog-api-key most obviously, would reach api.openai.com verbatim.
-// A denylist of credential-bearing header names is not a defense worth
-// trusting, since every name it misses is a leak.
-//
-// Not refused, because the caller is often not the one who filled this in.
-// model/gemini allocates Config.HTTPOptions.Headers and writes x-goog-api-client
-// and user-agent into it on every request, and the compaction summarizer
-// forwards the field onward (session/compaction/llm_summarizer.go), so a config
-// reaching this package can carry headers the application never set. Refusing
-// them would turn ADK's own version strings into a hard error on a config
-// nobody wrote by hand.
+// translates nor rejects: forwarding a header would let a caller's
+// Authorization displace the configured API key and carry a Gemini credential
+// to OpenAI, while refusing one would break the configs model/gemini fills in
+// itself.
 //
 // Headers meant for OpenAI belong on ClientConfig.Options, which is scoped to
 // the one backend that sees them.
@@ -499,14 +475,13 @@ var reasoningEfforts = map[genai.ThinkingLevel]shared.ReasoningEffort{
 // dynamicThinkingBudget is genai's "let the model size its own thinking".
 const dynamicThinkingBudget = -1
 
-// applyThinkingConfig maps genai's thinking config onto effort-based reasoning.
-// Responses has no token-budget knob, so a budget survives only as the
-// distinction between none, some, and the model's own choice.
+// applyThinkingConfig maps genai's thinking config onto effort-based reasoning,
+// a budget surviving only as the distinction between none, some, and the
+// model's own choice, since Responses has no token-budget knob.
 //
-// Summary is sent only when the caller sets IncludeThoughts. Reasoning
-// summaries require a verified OpenAI organization, so requesting one
-// unprompted would fail every reasoning call made by an unverified org — the
-// reason adk-python's unconditional summary is not copied here.
+// Summary rides on IncludeThoughts because summaries need a verified OpenAI
+// organization, so requesting one unprompted would fail an unverified org's
+// every reasoning call.
 func applyThinkingConfig(params *responses.ResponseNewParams, cfg *genai.ThinkingConfig) error {
 	if cfg == nil {
 		return nil
@@ -567,8 +542,8 @@ func applyThinkingConfig(params *responses.ResponseNewParams, cfg *genai.Thinkin
 
 // rejectUntranslatableValues catches the settings whose field is translated but
 // whose particular value would vanish, which the presence check below cannot
-// see. A value that reaches the wire and draws a named 400 is outside this rule
-// — an out-of-range Logprobs is already diagnosable, so it is left to the API.
+// see; a value that instead reaches the wire and draws a named 400, as an
+// out-of-range Logprobs does, is already diagnosable and is left to the API.
 //
 // It runs after every named error so that a caller who set one of those too
 // gets the error they have always got, rather than this sentinel jumping the

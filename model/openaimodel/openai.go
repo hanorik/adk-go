@@ -126,9 +126,9 @@ func (m *openAIModel) generateStream(ctx context.Context, params responses.Respo
 		// Shadowed for the same reason as in generate: reassigning the captured
 		// ctx would poison a second range with the first one's cancellation.
 		ctx := ctx
-		// Bounds the whole stream, not just its first byte — and that includes
-		// the time the caller spends in the range body, so a slow consumer can
-		// exhaust its own deadline while the provider is keeping up.
+		// Bounds the whole stream rather than its first byte, the caller's time
+		// in the range body included, so a slow consumer can exhaust its own
+		// deadline while the provider keeps up.
 		if timeout > 0 {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, timeout)
